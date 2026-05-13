@@ -1,0 +1,15 @@
+# Virtual environment
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Data files (runtime state, not source)
+data/rules.json
+data/nodes.json
+data/events.json
+
+# OS
+.DS_Store
+Thumbs.db
