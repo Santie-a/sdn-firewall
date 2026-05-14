@@ -159,15 +159,14 @@ def toggle_rule(rule_id: str, bg: BackgroundTasks):
 # ---------------------------------------------------------------------------
 
 @app.post("/rules/{rule_id}/hit", tags=["rules"])
-def record_hit(rule_id: str, byte_count: int = Query(0), bg: BackgroundTasks = None):
+def record_hit(rule_id: str, bg: BackgroundTasks, byte_count: int = Query(0)):
     rule = next((r for r in rules if r.id == rule_id), None)
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
     rule.stats.packet_count += 1
     rule.stats.byte_count   += byte_count
     rule.stats.last_match    = _now()
-    if bg:
-        bg.add_task(storage.save_rules, rules)
+    bg.add_task(storage.save_rules, rules)
     return {"packet_count": rule.stats.packet_count, "byte_count": rule.stats.byte_count}
 
 

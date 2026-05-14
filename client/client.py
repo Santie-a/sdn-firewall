@@ -53,6 +53,7 @@ class SDNClient:
         self.log_allowed  = config.get("log_allowed", False)
         self._rules: list[dict] = []
         self._lock = threading.Lock()
+        self._registered = False
 
     # ------------------------------------------------------------------
     # Server communication
@@ -76,13 +77,19 @@ class SDNClient:
             log.warning("GET %s failed: %s", path, e)
             return None
 
-    def register(self) -> None:
+    def register(self) -> bool:
+        """Attempt to register with the controller. Returns True on success."""
         r = self._post(
             "/nodes/register",
             json={"node_id": self.node_id, "ip": self.ip, "listen_port": self.listen_port},
         )
         if r:
-            log.info("Registered as '%s' (%s)", self.node_id, self.ip)
+            if not self._registered:
+                log.info("Registered as '%s' (%s)", self.node_id, self.ip)
+            self._registered = True
+            return True
+        self._registered = False
+        return False
 
     def _poll_rules(self) -> None:
         while True:
@@ -95,8 +102,22 @@ class SDNClient:
 
     def _heartbeat(self) -> None:
         while True:
+            if not self._registered:
+                self.register()
+            else:
+                try:
+                    r = requests.post(
+                        f"{self.server_url}/nodes/{self.node_id}/heartbeat",
+                        timeout=5,
+                    )
+                    if r.status_code == 404:
+                        log.info("Server no longer knows this node — re-registering")
+                        self._registered = False
+                        continue
+                    r.raise_for_status()
+                except Exception as e:
+                    log.warning("Heartbeat failed: %s", e)
             time.sleep(self.poll_interval)
-            self._post(f"/nodes/{self.node_id}/heartbeat")
 
     def _report_event(self, rule_id: str | None, action: str, packet: dict) -> None:
         self._post(
@@ -206,6 +227,7 @@ class SDNClient:
     # ------------------------------------------------------------------
 
     def run(self) -> None:
+        # Try once on startup; heartbeat thread retries indefinitely on failure
         self.register()
 
         for target in (self._poll_rules, self._heartbeat, self._listen_udp, self._listen_tcp):

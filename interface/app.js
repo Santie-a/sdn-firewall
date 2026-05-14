@@ -167,16 +167,156 @@ async function submitRule(payload) {
 }
 
 // -------------------------------------------------------------------------
+// Scenario presets — bulk-load common rule sets (covers spec test scenarios)
+// -------------------------------------------------------------------------
+const EMPTY_MATCH = {
+  src_ip: null, dst_ip: null, protocol: null, src_port: null, dst_port: null,
+  in_port: null, src_mac: null, dst_mac: null, eth_type: null,
+  vlan_id: null, vlan_priority: null, tos: null,
+};
+
+function mkRule(name, action, priority, match) {
+  return { name, action, priority, enabled: true, match: { ...EMPTY_MATCH, ...match } };
+}
+
+const PRESETS = {
+  web: {
+    name: "Allow Web Traffic",
+    rules: [
+      mkRule("Allow HTTP",  "allow", 100, { protocol: "TCP", dst_port: 80  }),
+      mkRule("Allow HTTPS", "allow", 100, { protocol: "TCP", dst_port: 443 }),
+      mkRule("Allow DNS",   "allow", 100, { protocol: "UDP", dst_port: 53  }),
+    ],
+  },
+  lockdown: {
+    name: "Lock Sensitive Ports",
+    rules: [
+      mkRule("Block SSH",    "block", 200, { protocol: "TCP", dst_port: 22   }),
+      mkRule("Block Telnet", "block", 200, { protocol: "TCP", dst_port: 23   }),
+      mkRule("Block RDP",    "block", 200, { protocol: "TCP", dst_port: 3389 }),
+    ],
+  },
+  udp: {
+    name: "UDP Test Set",
+    rules: [
+      mkRule("Allow UDP 9000",  "allow",  100, { protocol: "UDP", dst_port: 9000 }),
+      mkRule("Block UDP 9001",  "block",  100, { protocol: "UDP", dst_port: 9001 }),
+      mkRule("Report UDP 9002", "report", 100, { protocol: "UDP", dst_port: 9002 }),
+    ],
+  },
+  audit: {
+    name: "Audit Mode",
+    rules: [
+      mkRule("Report all traffic", "report", 1, {}),
+    ],
+  },
+  conflict: {
+    name: "Priority Conflict",
+    rules: [
+      mkRule("HIGH PRI: Block UDP 9000", "block", 300, { protocol: "UDP", dst_port: 9000 }),
+      mkRule("LOW PRI: Allow UDP 9000",  "allow", 100, { protocol: "UDP", dst_port: 9000 }),
+    ],
+  },
+};
+
+async function applyPreset(key, btn) {
+  const preset = PRESETS[key];
+  if (!preset) return;
+  if (!confirm(`Add ${preset.rules.length} rule(s) from "${preset.name}"?`)) return;
+  btn.disabled = true;
+  try {
+    for (const rule of preset.rules) {
+      await api("POST", "/rules", rule);
+    }
+    await loadRules();
+  } catch (e) {
+    alert("Failed to apply preset: " + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function clearAllRules(btn) {
+  if (_rules.length === 0) {
+    alert("No rules to clear.");
+    return;
+  }
+  if (!confirm(`Delete ALL ${_rules.length} rule(s)? This cannot be undone.`)) return;
+  btn.disabled = true;
+  try {
+    for (const r of [..._rules]) {
+      await api("DELETE", `/rules/${r.id}`);
+    }
+    await loadRules();
+  } catch (e) {
+    alert("Failed to clear: " + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Wire up buttons
+document.querySelectorAll(".preset-btn[data-preset]").forEach(btn => {
+  btn.addEventListener("click", () => applyPreset(btn.dataset.preset, btn));
+});
+document.getElementById("clearAllBtn").addEventListener("click", e => clearAllRules(e.currentTarget));
+
+// -------------------------------------------------------------------------
+// HTML escape helper — use for any user-controlled string injected via innerHTML
+// -------------------------------------------------------------------------
+function esc(v) {
+  if (v === null || v === undefined) return "";
+  return String(v)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// -------------------------------------------------------------------------
+// Rule interpreter — converts a rule object into a natural-language sentence
+// -------------------------------------------------------------------------
+function interpretRule(rule) {
+  const m = rule.match;
+  const verbs    = { allow: "Allow", block: "Block", report: "Report" };
+  const verbPast = { allow: "allowed", block: "blocked", report: "reported" };
+  const verb = verbs[rule.action] || rule.action;
+
+  const clauses = [];
+  if (m.src_ip)     clauses.push(`from <b>${esc(m.src_ip)}</b>`);
+  if (m.src_port)   clauses.push(`from port <b>${esc(m.src_port)}</b>`);
+  if (m.dst_ip)     clauses.push(`to <b>${esc(m.dst_ip)}</b>`);
+  if (m.dst_port)   clauses.push(`to port <b>${esc(m.dst_port)}</b>`);
+  if (m.src_mac)    clauses.push(`from MAC <b>${esc(m.src_mac)}</b>`);
+  if (m.dst_mac)    clauses.push(`to MAC <b>${esc(m.dst_mac)}</b>`);
+  if (m.in_port)    clauses.push(`via <b>${esc(m.in_port)}</b>`);
+  if (m.eth_type)   clauses.push(`of type <b>${esc(m.eth_type)}</b>`);
+  if (m.vlan_id != null)       clauses.push(`in VLAN <b>${esc(m.vlan_id)}</b>`);
+  if (m.vlan_priority != null) clauses.push(`VLAN priority <b>${esc(m.vlan_priority)}</b>`);
+  if (m.tos)        clauses.push(`with ToS <b>${esc(m.tos)}</b>`);
+
+  const subject = m.protocol
+    ? `<b>${esc(m.protocol)}</b> traffic`
+    : (clauses.length ? "traffic" : "all traffic");
+
+  const matchPart = clauses.length ? " " + clauses.join(" ") : "";
+  const enabledNote = rule.enabled ? "" : " <i>(disabled)</i>";
+
+  return `${verb} ${subject}${matchPart}. Priority <b>${esc(rule.priority)}</b>.${enabledNote}`;
+}
+
+// -------------------------------------------------------------------------
 // 6b — Flow table
 // -------------------------------------------------------------------------
 const WILDCARD = "<span class='wc'>*</span>";
 
 function fmt(v) {
-  return (v === null || v === undefined || v === "") ? WILDCARD : v;
+  return (v === null || v === undefined || v === "") ? WILDCARD : esc(v);
 }
 
 function actionTag(action) {
-  return `<span class="tag tag--${action}">${action}</span>`;
+  return `<span class="tag tag--${esc(action)}">${esc(action)}</span>`;
 }
 
 function renderRules(rules) {
@@ -191,11 +331,13 @@ function renderRules(rules) {
 
   tbody.innerHTML = rules.map(r => {
     const m = r.match;
-    const disabled = r.enabled ? "" : "disabled";
     return `
-      <tr class="${r.enabled ? "" : "disabled"}" data-id="${r.id}">
-        <td><strong>${r.priority}</strong></td>
-        <td>${r.name}</td>
+      <tr class="${r.enabled ? "" : "disabled"}" data-id="${esc(r.id)}">
+        <td><strong>${esc(r.priority)}</strong></td>
+        <td>
+          <div class="rule-name">${esc(r.name)}</div>
+          <div class="rule-interp">${interpretRule(r)}</div>
+        </td>
         <td>${fmt(m.src_ip)}</td>
         <td>${fmt(m.dst_ip)}</td>
         <td>${fmt(m.protocol)}</td>
@@ -206,10 +348,10 @@ function renderRules(rules) {
         <td>${formatBytes(r.stats.byte_count)}</td>
         <td><span class="tag tag--${r.enabled ? "active" : "inactive"}">${r.enabled ? "On" : "Off"}</span></td>
         <td class="row-actions">
-          <button class="icon-btn toggle-btn" title="${r.enabled ? "Disable" : "Enable"}" data-id="${r.id}">
+          <button class="icon-btn toggle-btn" title="${r.enabled ? "Disable" : "Enable"}" data-id="${esc(r.id)}">
             ${r.enabled ? "⏸" : "▶"}
           </button>
-          <button class="icon-btn delete delete-btn" title="Delete" data-id="${r.id}">🗑</button>
+          <button class="icon-btn delete delete-btn" title="Delete" data-id="${esc(r.id)}">🗑</button>
         </td>
       </tr>`;
   }).join("");
@@ -240,6 +382,7 @@ function renderRules(rules) {
       }
     });
   });
+
 }
 
 function formatBytes(bytes) {
@@ -249,14 +392,12 @@ function formatBytes(bytes) {
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
 }
 
+let _rules = [];
+let _nodes = [];
+
 async function loadRules() {
-  try {
-    const rules = await api("GET", "/rules");
-    renderRules(rules);
-    setStatus(true);
-  } catch {
-    setStatus(false);
-  }
+  _rules = await api("GET", "/rules");
+  renderRules(_rules);
 }
 
 // -------------------------------------------------------------------------
@@ -306,10 +447,10 @@ function renderNodes(nodes) {
     const status = stale ? "inactive" : n.status;
     return `
       <tr>
-        <td><code>${n.node_id}</code></td>
-        <td>${n.ip}</td>
-        <td>${n.listen_port}</td>
-        <td><span class="tag tag--${status}">${status}</span></td>
+        <td><code>${esc(n.node_id)}</code></td>
+        <td>${esc(n.ip)}</td>
+        <td>${esc(n.listen_port)}</td>
+        <td><span class="tag tag--${esc(status)}">${esc(status)}</span></td>
         <td>${formatDate(n.registered_at)}</td>
         <td class="${stale ? "stale-time" : ""}">${formatTime(n.last_seen)}</td>
       </tr>`;
@@ -317,12 +458,8 @@ function renderNodes(nodes) {
 }
 
 async function loadNodes() {
-  try {
-    const nodes = await api("GET", "/nodes");
-    renderNodes(nodes);
-  } catch {
-    // status dot already handled by loadRules
-  }
+  _nodes = await api("GET", "/nodes");
+  renderNodes(_nodes);
 }
 
 // -------------------------------------------------------------------------
@@ -344,9 +481,9 @@ function renderEvents(events) {
   tbody.innerHTML = [...rows].reverse().map(e => {
     const p = e.packet;
     return `
-      <tr class="event-row event-row--${e.action}">
+      <tr class="event-row event-row--${esc(e.action)}">
         <td class="mono">${formatTime(e.timestamp)}</td>
-        <td><code>${e.node_id}</code></td>
+        <td><code>${esc(e.node_id)}</code></td>
         <td>${actionTag({ allowed: "allow", blocked: "block", reported: "report" }[e.action] || e.action)}</td>
         <td>${fmt(p.src_ip)}</td>
         <td>${fmt(p.dst_ip)}</td>
@@ -354,18 +491,14 @@ function renderEvents(events) {
         <td>${fmt(p.src_port)}</td>
         <td>${fmt(p.dst_port)}</td>
         <td>${formatBytes(p.size)}</td>
-        <td class="mono muted">${e.rule_id ? e.rule_id.slice(0, 8) + "…" : "default"}</td>
+        <td class="mono muted">${e.rule_id ? esc(e.rule_id.slice(0, 8)) + "…" : "default"}</td>
       </tr>`;
   }).join("");
 }
 
 async function loadEvents() {
-  try {
-    _events = await api("GET", "/events?limit=200");
-    renderEvents(_events);
-  } catch {
-    // status dot handled by loadRules
-  }
+  _events = await api("GET", "/events?limit=200");
+  renderEvents(_events);
 }
 
 // Re-render on filter change (no extra fetch needed)
@@ -392,9 +525,193 @@ function touchUpdated() {
 }
 
 async function pollAll() {
-  await Promise.allSettled([loadRules(), loadNodes(), loadEvents()]);
+  const results = await Promise.allSettled([loadRules(), loadNodes(), loadEvents()]);
+  setStatus(results.every(r => r.status === "fulfilled"));
+  updateDashboard();
+  renderTopology();
+  pulseNewEvents();
   touchUpdated();
 }
+
+// -------------------------------------------------------------------------
+// Topology graph (SVG, radial layout)
+// -------------------------------------------------------------------------
+const TOPO_W      = 600;
+const TOPO_H      = 420;
+const TOPO_CX     = TOPO_W / 2;
+const TOPO_CY     = TOPO_H / 2;
+const TOPO_RADIUS = 150;
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function svgEl(name, attrs = {}, text = null) {
+  const el = document.createElementNS(SVG_NS, name);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  if (text !== null) el.textContent = text;
+  return el;
+}
+
+function nodePosition(i, n) {
+  // Start at top (-π/2), distribute around the circle
+  const angle = (2 * Math.PI * i) / n - Math.PI / 2;
+  return {
+    x: TOPO_CX + TOPO_RADIUS * Math.cos(angle),
+    y: TOPO_CY + TOPO_RADIUS * Math.sin(angle),
+  };
+}
+
+// Keep node positions so pulses can find them between renders
+const _topoPositions = {};
+
+function renderTopology() {
+  const svg   = document.getElementById("topology");
+  const empty = document.getElementById("topoEmpty");
+  if (!svg) return;
+
+  // Wipe and redraw
+  svg.innerHTML = "";
+
+  if (_nodes.length === 0) {
+    empty.classList.remove("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+
+  // Links first, so they render under nodes
+  _nodes.forEach((_, i) => {
+    const { x, y } = nodePosition(i, _nodes.length);
+    svg.appendChild(svgEl("line", {
+      x1: TOPO_CX, y1: TOPO_CY, x2: x, y2: y, class: "topo-link",
+    }));
+  });
+
+  // Controller hub
+  svg.appendChild(svgEl("circle", {
+    cx: TOPO_CX, cy: TOPO_CY, r: 34, class: "topo-controller-bg",
+  }));
+  svg.appendChild(svgEl("text", {
+    x: TOPO_CX, y: TOPO_CY - 2, class: "topo-controller-label-inner",
+  }, "CONTROLLER"));
+  svg.appendChild(svgEl("text", {
+    x: TOPO_CX, y: TOPO_CY + 12, class: "topo-controller-label-inner",
+  }, "(server)"));
+
+  // Nodes
+  _nodes.forEach((node, i) => {
+    const { x, y } = nodePosition(i, _nodes.length);
+    _topoPositions[node.node_id] = { x, y };
+
+    const stale = staleness(node.last_seen) > 30;
+    svg.appendChild(svgEl("circle", {
+      cx: x, cy: y, r: 22,
+      class: `topo-node${stale ? " inactive" : ""}`,
+      "data-node": node.node_id,
+    }));
+    svg.appendChild(svgEl("text", {
+      x: x, y: y + 42, class: "topo-node-label",
+    }, node.node_id));
+    svg.appendChild(svgEl("text", {
+      x: x, y: y + 56, class: "topo-node-sub",
+    }, node.ip));
+  });
+}
+
+// -------------------------------------------------------------------------
+// Pulse animation triggered by new events
+// -------------------------------------------------------------------------
+const _seenEventIds = new Set();
+let _firstPoll = true;
+
+function pulseNewEvents() {
+  // On first poll, just seed the set so we don't fire pulses for backlog
+  if (_firstPoll) {
+    for (const e of _events) _seenEventIds.add(e.event_id);
+    _firstPoll = false;
+    return;
+  }
+
+  const actionClass = { allowed: "allow", blocked: "block", reported: "report" };
+  const svg = document.getElementById("topology");
+  if (!svg) return;
+
+  for (const e of _events) {
+    if (_seenEventIds.has(e.event_id)) continue;
+    _seenEventIds.add(e.event_id);
+
+    const pos = _topoPositions[e.node_id];
+    if (!pos) continue;
+
+    const cls = actionClass[e.action] || "allow";
+    const ring = svgEl("circle", {
+      cx: pos.x, cy: pos.y, r: 22,
+      class: `topo-pulse topo-pulse--${cls}`,
+    });
+    svg.appendChild(ring);
+    ring.addEventListener("animationend", () => ring.remove());
+  }
+
+  // Prevent the set from growing unbounded
+  if (_seenEventIds.size > 2000) {
+    const keep = new Set(_events.map(e => e.event_id));
+    _seenEventIds.clear();
+    keep.forEach(id => _seenEventIds.add(id));
+  }
+}
+
+// -------------------------------------------------------------------------
+// Dashboard counters
+// -------------------------------------------------------------------------
+const _prevStats = { allowed: 0, blocked: 0, reported: 0, nodes: 0, rules: 0 };
+
+function setTile(id, value, key) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = value;
+  if (key && _prevStats[key] !== value) {
+    el.parentElement.classList.remove("pulse");
+    void el.parentElement.offsetWidth; // restart animation
+    el.parentElement.classList.add("pulse");
+    _prevStats[key] = value;
+  }
+}
+
+function timeAgo(iso) {
+  if (!iso) return "—";
+  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (secs < 5)   return "just now";
+  if (secs < 60)  return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  return `${Math.floor(secs / 3600)}h ago`;
+}
+
+function updateDashboard() {
+  // Counts from events (server returns up to 200 most recent)
+  let allowed = 0, blocked = 0, reported = 0;
+  for (const e of _events) {
+    if (e.action === "allowed")  allowed++;
+    else if (e.action === "blocked")  blocked++;
+    else if (e.action === "reported") reported++;
+  }
+
+  // Active = last_seen within 30 s
+  const activeNodes = _nodes.filter(n => staleness(n.last_seen) <= 30).length;
+  const activeRules = _rules.filter(r => r.enabled).length;
+  const last        = _events.length ? _events[_events.length - 1].timestamp : null;
+
+  setTile("statAllowed",   allowed,   "allowed");
+  setTile("statBlocked",   blocked,   "blocked");
+  setTile("statReported",  reported,  "reported");
+  setTile("statNodes",     activeNodes, "nodes");
+  setTile("statRules",     activeRules, "rules");
+  setTile("statLastEvent", timeAgo(last));
+}
+
+// Refresh "time ago" every second so it stays current between polls
+setInterval(() => {
+  const last = _events.length ? _events[_events.length - 1].timestamp : null;
+  const el = document.getElementById("statLastEvent");
+  if (el) el.textContent = timeAgo(last);
+}, 1000);
 
 // -------------------------------------------------------------------------
 // Boot: initial load + polling (5 s)

@@ -24,6 +24,34 @@
     </div>
   </header>
 
+  <!-- Dashboard strip -->
+  <section class="dashboard">
+    <div class="tile tile--allow">
+      <div class="tile-value" id="statAllowed">0</div>
+      <div class="tile-label">Allowed</div>
+    </div>
+    <div class="tile tile--block">
+      <div class="tile-value" id="statBlocked">0</div>
+      <div class="tile-label">Blocked</div>
+    </div>
+    <div class="tile tile--report">
+      <div class="tile-value" id="statReported">0</div>
+      <div class="tile-label">Reported</div>
+    </div>
+    <div class="tile tile--teal">
+      <div class="tile-value" id="statNodes">0</div>
+      <div class="tile-label">Active Nodes</div>
+    </div>
+    <div class="tile tile--teal">
+      <div class="tile-value" id="statRules">0</div>
+      <div class="tile-label">Active Rules</div>
+    </div>
+    <div class="tile tile--ghost">
+      <div class="tile-value tile-value--sm" id="statLastEvent">—</div>
+      <div class="tile-label">Last Event</div>
+    </div>
+  </section>
+
   <main class="layout">
 
     <!-- ------------------------------------------------------------------ -->
@@ -169,17 +197,52 @@
         <button class="tab active" data-tab="rules">Flow Table</button>
         <button class="tab" data-tab="nodes">Nodes</button>
         <button class="tab" data-tab="events">Event Log</button>
+        <button class="tab" data-tab="topology">Topology</button>
       </div>
 
       <!-- Flow Table (6b) -->
       <div class="tab-panel active" id="tab-rules">
+
+        <div class="workspace-card">
+          <div class="card-header">
+            <h2>Scenario Presets</h2>
+            <span class="badge badge--soft">quick load</span>
+          </div>
+          <div class="preset-body">
+            <button class="preset-btn" data-preset="web">
+              <strong>Allow Web</strong>
+              <span>HTTP · HTTPS · DNS</span>
+            </button>
+            <button class="preset-btn" data-preset="lockdown">
+              <strong>Lock Sensitive Ports</strong>
+              <span>Block SSH · Telnet · RDP</span>
+            </button>
+            <button class="preset-btn" data-preset="udp">
+              <strong>UDP Test Set</strong>
+              <span>Allow 9000 · Block 9001 · Report 9002</span>
+            </button>
+            <button class="preset-btn" data-preset="audit">
+              <strong>Audit Mode</strong>
+              <span>Report everything</span>
+            </button>
+            <button class="preset-btn" data-preset="conflict">
+              <strong>Priority Conflict</strong>
+              <span>Block + Allow on same flow</span>
+            </button>
+            <button class="preset-btn preset-btn--danger" id="clearAllBtn">
+              <strong>Clear All</strong>
+              <span>Delete every rule</span>
+            </button>
+          </div>
+        </div>
+
         <div class="workspace-card">
           <div class="card-header">
             <h2>Flow Table</h2>
             <span class="badge" id="ruleCount">0 rules</span>
           </div>
           <div class="table-wrap">
-            <table class="flow-table" id="flowTable">
+            <table class="flow-table" id="flowTable" data-placeholder="for-interpretation">
               <thead>
                 <tr>
                   <th>Priority</th>
@@ -272,6 +335,26 @@
                 </tr>
               </tbody>
             </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Topology -->
+      <div class="tab-panel" id="tab-topology">
+        <div class="workspace-card">
+          <div class="card-header">
+            <h2>Network Topology</h2>
+            <div class="topo-legend">
+              <span class="legend-item"><span class="legend-dot legend-dot--active"></span>Active</span>
+              <span class="legend-item"><span class="legend-dot legend-dot--inactive"></span>Inactive</span>
+              <span class="legend-item"><span class="legend-dot legend-dot--allow"></span>Allowed</span>
+              <span class="legend-item"><span class="legend-dot legend-dot--block"></span>Blocked</span>
+              <span class="legend-item"><span class="legend-dot legend-dot--report"></span>Reported</span>
+            </div>
+          </div>
+          <div class="topo-wrap">
+            <svg id="topology" viewBox="0 0 600 420" xmlns="http://www.w3.org/2000/svg"></svg>
+            <p class="topo-empty hidden" id="topoEmpty">No nodes registered yet.</p>
           </div>
         </div>
       </div>
