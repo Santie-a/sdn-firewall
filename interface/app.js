@@ -1,7 +1,4 @@
-/* SDN Firewall Controller — app.js
-   6a: tab switching, form clear, basic validation.
-   6b: flow table rendering, toggle, delete.
-   6c–6e will add nodes, events, and full server sync. */
+/* SDN Firewall Controller — app.js */
 
 // When served by FastAPI (/ui), use the same origin.
 // When opened as a local file, fall back to localhost:5000.
@@ -121,7 +118,7 @@ function buildPayload() {
 }
 
 // -------------------------------------------------------------------------
-// Form — submit (wired to server in 6e; stub for now)
+// Form — submit
 // -------------------------------------------------------------------------
 document.getElementById("ruleForm").addEventListener("submit", async e => {
   e.preventDefault();
@@ -307,7 +304,7 @@ function interpretRule(rule) {
 }
 
 // -------------------------------------------------------------------------
-// 6b — Flow table
+// Flow table
 // -------------------------------------------------------------------------
 const WILDCARD = "<span class='wc'>*</span>";
 
@@ -411,7 +408,7 @@ function setStatus(ok) {
 }
 
 // -------------------------------------------------------------------------
-// 6c — Nodes panel
+// Nodes panel
 // -------------------------------------------------------------------------
 function formatTime(iso) {
   if (!iso) return "—";
@@ -437,13 +434,13 @@ function renderNodes(nodes) {
     `${nodes.length} node${nodes.length !== 1 ? "s" : ""}`;
 
   if (nodes.length === 0) {
-    tbody.innerHTML = `<tr class="empty-row"><td colspan="6">No nodes registered yet.</td></tr>`;
+    tbody.innerHTML = `<tr class="empty-row"><td colspan="7">No nodes registered yet.</td></tr>`;
     return;
   }
 
   tbody.innerHTML = nodes.map(n => {
-    // Mark stale if last heartbeat > 3× poll interval (assume 30 s default)
-    const stale  = staleness(n.last_seen) > 30;
+    // Trust server status, but also flag any node older than the threshold locally
+    const stale  = staleness(n.last_seen) > 10;
     const status = stale ? "inactive" : n.status;
     return `
       <tr>
@@ -453,8 +450,24 @@ function renderNodes(nodes) {
         <td><span class="tag tag--${esc(status)}">${esc(status)}</span></td>
         <td>${formatDate(n.registered_at)}</td>
         <td class="${stale ? "stale-time" : ""}">${formatTime(n.last_seen)}</td>
+        <td class="row-actions">
+          <button class="icon-btn delete delete-node-btn" title="Remove this node" data-id="${esc(n.node_id)}">🗑</button>
+        </td>
       </tr>`;
   }).join("");
+
+  tbody.querySelectorAll(".delete-node-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      if (!confirm(`Remove node "${btn.dataset.id}" from the registry?`)) return;
+      btn.disabled = true;
+      try {
+        await api("DELETE", `/nodes/${encodeURIComponent(btn.dataset.id)}`);
+        await loadNodes();
+      } catch (e) {
+        alert("Failed: " + e.message);
+      }
+    });
+  });
 }
 
 async function loadNodes() {
@@ -462,8 +475,27 @@ async function loadNodes() {
   renderNodes(_nodes);
 }
 
+document.getElementById("clearInactiveBtn").addEventListener("click", async (e) => {
+  const inactiveCount = _nodes.filter(n => n.status === "inactive" || staleness(n.last_seen) > 10).length;
+  if (inactiveCount === 0) {
+    alert("No inactive nodes to clear.");
+    return;
+  }
+  if (!confirm(`Remove ${inactiveCount} inactive node(s) from the registry?`)) return;
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  try {
+    await api("DELETE", "/nodes?status=inactive");
+    await loadNodes();
+  } catch (err) {
+    alert("Failed: " + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 // -------------------------------------------------------------------------
-// 6d — Event log
+// Event log
 // -------------------------------------------------------------------------
 let _events = [];
 

@@ -189,7 +189,7 @@
     </aside>
 
     <!-- ------------------------------------------------------------------ -->
-    <!-- RIGHT: Tabs (populated in 6b–6d)                                   -->
+    <!-- RIGHT: Tabs                                                        -->
     <!-- ------------------------------------------------------------------ -->
     <section class="workspace">
 
@@ -200,7 +200,7 @@
         <button class="tab" data-tab="topology">Topology</button>
       </div>
 
-      <!-- Flow Table (6b) -->
+      <!-- Flow Table -->
       <div class="tab-panel active" id="tab-rules">
 
         <div class="workspace-card">
@@ -269,12 +269,15 @@
         </div>
       </div>
 
-      <!-- Nodes (6c) -->
+      <!-- Nodes -->
       <div class="tab-panel" id="tab-nodes">
         <div class="workspace-card">
           <div class="card-header">
             <h2>Registered Nodes</h2>
-            <span class="badge" id="nodeCount">0 nodes</span>
+            <div class="card-actions">
+              <span class="badge" id="nodeCount">0 nodes</span>
+              <button class="btn btn--ghost btn--sm" id="clearInactiveBtn">Clear inactive</button>
+            </div>
           </div>
           <div class="table-wrap">
             <table class="flow-table" id="nodeTable">
@@ -286,11 +289,12 @@
                   <th>Status</th>
                   <th>Registered</th>
                   <th>Last Seen</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody id="nodeTableBody">
                 <tr class="empty-row">
-                  <td colspan="6">No nodes registered yet.</td>
+                  <td colspan="7">No nodes registered yet.</td>
                 </tr>
               </tbody>
             </table>
@@ -298,7 +302,7 @@
         </div>
       </div>
 
-      <!-- Event Log (6d) -->
+      <!-- Event Log -->
       <div class="tab-panel" id="tab-events">
         <div class="workspace-card">
           <div class="card-header">

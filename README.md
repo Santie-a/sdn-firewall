@@ -16,8 +16,8 @@ flowchart LR
 
     subgraph DP["Data Plane (LAN)"]
         N1["Client Node 1<br/>:9000"]
-        N2["Client Node 2<br/>:9000"]
-        N3["Client Node 3<br/>:9000"]
+        N2["Client Node 2<br/>:9001"]
+        N3["Client Node 3<br/>:9002"]
     end
 
     GEN["Traffic Generator<br/>UDP / TCP"]
@@ -150,6 +150,7 @@ Mapping of each requirement from *Proyecto final – Instrucciones* to its imple
 |---|---|
 | Controller: register clients | `server/main.py` → `POST /nodes/register` |
 | Controller: list of active nodes (id, IP, status, last comm) | `server/main.py` → `GET /nodes`; `Node` model in `server/models.py` |
+| Controller: node lifecycle management | Stale detection background task + `DELETE /nodes/{id}` + `DELETE /nodes?status=inactive` |
 | Controller: store and distribute rules | `server/main.py` → `/rules` endpoints + `server/storage.py` |
 | Controller: receive events/alerts from clients | `server/main.py` → `POST /events` |
 | Controller: logs, timestamps, counters | ISO 8601 timestamps on every model + `RuleStats` + JSON persistence |
