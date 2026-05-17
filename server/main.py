@@ -5,6 +5,7 @@ Docs at:   http://localhost:5000/docs
 """
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
@@ -29,6 +30,33 @@ rules:  list[FlowRule] = []
 nodes:  list[Node]     = []
 events: list[Event]    = []
 
+# Stale detection
+STALE_THRESHOLD_SECS = 10
+STALE_CHECK_INTERVAL = 2
+
+
+async def _stale_node_loop() -> None:
+    """Periodically mark nodes as inactive when last_seen is older than the threshold."""
+    while True:
+        try:
+            await asyncio.sleep(STALE_CHECK_INTERVAL)
+            now = datetime.now(timezone.utc)
+            changed = False
+            for node in nodes:
+                last = datetime.fromisoformat(node.last_seen)
+                age  = (now - last).total_seconds()
+                new_status = "inactive" if age > STALE_THRESHOLD_SECS else "active"
+                if node.status != new_status:
+                    node.status = new_status
+                    changed = True
+            if changed:
+                storage.save_nodes(nodes)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            # Never let an exception kill the background loop
+            await asyncio.sleep(STALE_CHECK_INTERVAL)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -36,7 +64,11 @@ async def lifespan(app: FastAPI):
     rules  = storage.load_rules()
     nodes  = storage.load_nodes()
     events = storage.load_events()
+
+    stale_task = asyncio.create_task(_stale_node_loop())
     yield
+    stale_task.cancel()
+
     storage.save_rules(rules)
     storage.save_nodes(nodes)
     storage.save_events(events)
@@ -106,6 +138,28 @@ def heartbeat(node_id: str, bg: BackgroundTasks):
     node.status    = "active"
     bg.add_task(storage.save_nodes, nodes)
     return {"ok": True, "last_seen": node.last_seen}
+
+
+@app.delete("/nodes/{node_id}", status_code=204, tags=["nodes"])
+def delete_node(node_id: str, bg: BackgroundTasks):
+    global nodes
+    node = next((n for n in nodes if n.node_id == node_id), None)
+    if not node:
+        raise HTTPException(status_code=404, detail="Node not found")
+    nodes = [n for n in nodes if n.node_id != node_id]
+    bg.add_task(storage.save_nodes, nodes)
+
+
+@app.delete("/nodes", status_code=204, tags=["nodes"])
+def delete_nodes(bg: BackgroundTasks,
+                 status: Optional[str] = Query(None, description="Only delete nodes with this status")):
+    """Bulk delete. With ?status=inactive cleans up stale nodes; with no filter clears all."""
+    global nodes
+    if status:
+        nodes = [n for n in nodes if n.status != status]
+    else:
+        nodes = []
+    bg.add_task(storage.save_nodes, nodes)
 
 
 # ---------------------------------------------------------------------------
