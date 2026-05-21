@@ -1,10 +1,10 @@
 # SDN Firewall
 
-Programable LAN network with firewall capabilities, built on the SDN paradigm.
+Programmable LAN network with firewall capabilities, built on the SDN paradigm. A centralized controller stores flow rules and distributes them to replicable client nodes, which evaluate live UDP/TCP traffic and **permit**, **block**, or **report** it.
 
 ## Architecture
 
-The system separates the **control plane** (decisions, policy storage) from the **data plane** (traffic evaluation), following the SDN paradigm. The controller is a single source of truth; clients are stateless workers that pull rules and apply them locally.
+The system separates the **control plane** (decisions, policy storage) from the **data plane** (traffic evaluation), following the SDN paradigm. The controller is the single source of truth; clients are stateless workers that pull rules and apply them locally.
 
 ```mermaid
 flowchart LR
@@ -49,7 +49,7 @@ sequenceDiagram
     UI->>CTRL: POST /rules {match, action, priority}
     CTRL-->>UI: 201 Created
 
-    loop Every poll_interval (10 s)
+    loop Every poll_interval
         N->>CTRL: GET /rules?enabled_only=true
         CTRL-->>N: Rules sorted by priority
         N->>CTRL: POST /nodes/{id}/heartbeat
@@ -77,7 +77,7 @@ sequenceDiagram
 | Component | Role | Language |
 |---|---|---|
 | **Controller** (`server/`) | Stores rules, distributes them, receives events, registers nodes | Python · FastAPI |
-| **Client** (`client/`) | Listens for traffic, evaluates against rules, reports decisions | Python · stdlib |
+| **Client** (`client/`) | Listens for traffic, evaluates against rules, reports decisions | Python · stdlib + `requests` |
 | **Traffic Generator** (`traffic_gen/`) | Sends configurable UDP/TCP traffic to test rules | Python · stdlib |
 | **Admin UI** (`interface/`) | Rule CRUD, live tables, dashboard, topology graph | HTML · CSS · JS |
 
@@ -89,56 +89,37 @@ sdn-firewall/
 ├── client/          # Replicable node (Python) — data plane
 ├── traffic_gen/     # UDP/TCP traffic generator
 ├── interface/       # Admin UI (HTML/CSS/JS)
-└── data/            # Runtime JSON storage (gitignored)
+├── data/            # Runtime JSON storage (auto-created, gitignored)
+├── README.md        # This file — overview & spec compliance
+├── SERVER.md        # Controller setup & API reference
+├── CLIENT.md        # Client deployment & rule evaluation
+└── GENERATOR.md     # Traffic generator usage
 ```
 
-## Setup
+## Quick start
 
-```bash
-# From sdn-firewall/
+```powershell
+# from sdn-firewall/
 python -m venv .venv
-.venv\Scripts\activate        # Windows
-pip install -r server/requirements.txt
+.venv\Scripts\Activate.ps1
+pip install -r server/requirements.txt -r client/requirements.txt
 ```
 
-Initialize data files (required on first run, do once per machine):
-```bash
-echo [] > data/rules.json
-echo [] > data/nodes.json
-echo [] > data/events.json
-```
+A minimal end-to-end run:
 
-## Running
+1. Start the **controller** on the main machine — see [SERVER.md](SERVER.md).
+2. Start one or more **client nodes** — see [CLIENT.md](CLIENT.md).
+3. Send **test traffic** and watch the Event Log in the UI — see [GENERATOR.md](GENERATOR.md).
 
-**Server** (run on the main machine):
-```bash
-cd server
-uvicorn main:app --host 0.0.0.0 --port 5000
-```
-- API docs: `http://localhost:5000/docs`
-- Admin UI: `http://<server-ip>:5000/ui`
+The `data/` directory is created automatically on first run — no manual setup needed.
 
-**Client** (run on each node — edit `config.json` only):
-```bash
-cd client
-python client.py
-```
+## Documentation
 
-`config.json` fields:
-| Field | Description |
+| Guide | Covers |
 |---|---|
-| `node_id` | Unique name for this node |
-| `server_url` | Controller IP, e.g. `http://192.168.1.100:5000` |
-| `listen_port` | Port to receive traffic on |
-| `poll_interval` | Seconds between rule syncs |
-| `log_allowed` | `true` to log allowed traffic as events |
-
-**Traffic generator:**
-```bash
-cd traffic_gen
-python generator.py --ip <client-ip> --port 9000 --protocol UDP --count 10
-python generator.py --help   # all options
-```
+| [SERVER.md](SERVER.md) | Controller setup, running, REST API reference, admin UI, recommended default-deny posture |
+| [CLIENT.md](CLIENT.md) | Client deployment, `config.json`, replicability, rule evaluation, how actions are applied |
+| [GENERATOR.md](GENERATOR.md) | Traffic generator usage, CLI flags, examples, the self-reported metadata header |
 
 ## Spec compliance
 
@@ -165,7 +146,7 @@ Mapping of each requirement from *Proyecto final – Instrucciones* to its imple
 | Traffic gen: change IP/port/count/interval/message | CLI flags `--ip --port --count --interval --message` |
 | Interface: match fields, action, priority | `interface/index.html` rule form |
 | Interface: rule table with counters | Flow Table tab + hit/byte columns |
-| Interface: policy interpretation | "Policy Interpretation" panel |
+| Interface: policy interpretation | Per-rule natural-language interpretation in the flow table |
 | Interface: sync with server | `interface/app.js` `pollAll()` every 5 s |
 
 ### Rule fields
@@ -173,7 +154,7 @@ Mapping of each requirement from *Proyecto final – Instrucciones* to its imple
 | Spec field | Model field |
 |---|---|
 | IP src / dst | `match.src_ip`, `match.dst_ip` (CIDR supported) |
-| Protocol (TCP, UDP min) | `match.protocol` (TCP / UDP / ICMP) |
+| Protocol (TCP, UDP min) | `match.protocol` (TCP / UDP) |
 | Port src / dst | `match.src_port`, `match.dst_port` |
 | Priority | `FlowRule.priority` (0–65535) |
 | *Recommended:* ingress port | `match.in_port` |
@@ -181,6 +162,8 @@ Mapping of each requirement from *Proyecto final – Instrucciones* to its imple
 | *Recommended:* EthType | `match.eth_type` |
 | *Recommended:* VLAN + VLAN priority | `match.vlan_id`, `match.vlan_priority` |
 | *Recommended:* ToS | `match.tos` |
+
+How each field is actually enforced (observed vs. self-reported vs. unavailable) is documented in **[CLIENT.md](CLIENT.md#match-field-enforcement)**.
 
 ### Required actions
 
@@ -198,6 +181,7 @@ Mapping of each requirement from *Proyecto final – Instrucciones* to its imple
 | Block when matches denial policy | Rule engine returns `block`, client discards (TCP: closes; UDP: silent) |
 | Report sensitive/suspicious events | `report` action + `log_allowed` flag for audit trails |
 | Counters per rule | `RuleStats` (packet count, byte count, last match) |
+| Deny by default | Recommended catch-all rule — see [SERVER.md](SERVER.md#recommended-default-deny-posture) |
 
 ### Restrictions
 
@@ -208,13 +192,9 @@ Mapping of each requirement from *Proyecto final – Instrucciones* to its imple
 | Client replicable with minimal config | Only `config.json` changes (node_id, server_url, port) |
 | Rules follow HTML reference flow-table model | Match fields + action + priority + counters mirror the reference |
 
-### Test scenarios
+## Test suite
 
-See the [Test Suite](#test-suite) below — T1–T5 are the spec scenarios, T6–T10 are extra coverage.
-
-## Test Suite
-
-Run on a LAN with the controller, at least one client, and the traffic generator.
+Run on a LAN with the controller, at least one client, and the traffic generator. T1–T5 are the spec scenarios; T6–T12 are extra coverage.
 
 | # | Goal | Rule | Command |
 |---|---|---|---|
@@ -226,15 +206,7 @@ Run on a LAN with the controller, at least one client, and the traffic generator
 | T6 | TCP block | `proto=TCP, dst_port=9000, block, pri=100` | `python generator.py --ip <client> --port 9000 --protocol TCP` |
 | T7 | CIDR subnet block | `src_ip=192.168.1.0/24, block, pri=150` | From an in-subnet machine |
 | T8 | Multi-client distribution | Any rule | Send to two different clients |
-| T9 | Live toggle | Disable a rule via UI mid-traffic | Verify packets pass next poll |
-| T10 | Live rule add | Add a block rule while UDP is flowing | Verify packets blocked within poll interval |
-
-## Flow rules
-
-Each rule has: match fields (IP, protocol, port — blank = wildcard `*`), an action, and a priority. Higher priority wins on conflict.
-
-| Action | Effect |
-|---|---|
-| `allow` | Packet accepted |
-| `block` | Packet dropped, event sent to server |
-| `report` | Packet accepted, event sent to server |
+| T9 | Live toggle | Toggle an `allow` rule via UI mid-traffic | Disable it → traffic stops passing within one poll |
+| T10 | Live rule add | Add a `block` rule while UDP is flowing | Verify packets blocked within poll interval |
+| T11 | Block by MAC (self-reported) | `src_mac=<generator MAC>, block, pri=200` | `python generator.py --ip <client> --port 9000 --protocol UDP` (MAC is printed on startup) |
+| T12 | VLAN match (self-reported) | `vlan_id=20, report, pri=100` | `python generator.py --ip <client> --port 9000 --protocol UDP --vlan 20` |

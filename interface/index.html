@@ -115,7 +115,6 @@
               <option value="">Any</option>
               <option value="TCP">TCP</option>
               <option value="UDP">UDP</option>
-              <option value="ICMP">ICMP</option>
             </select>
           </div>
           <div class="field">
@@ -132,6 +131,11 @@
         <details id="extendedSection">
           <summary class="section-label extended-toggle">Extended fields</summary>
           <div class="extended-body">
+            <p class="hint">
+              Ingress Port and Eth Type are enforced for all traffic. MAC and
+              VLAN ID match traffic from the project&rsquo;s generator only
+              (self-reported in the packet). VLAN Priority and ToS are not enforced.
+            </p>
             <div class="field-group">
               <div class="field">
                 <label for="fInPort">Ingress Port</label>

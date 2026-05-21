@@ -15,12 +15,35 @@ python generator.py --ip 192.168.1.101 --port 9000 --protocol UDP --count 0 --in
 
 # Spoof a specific source port (UDP only)
 python generator.py --ip 192.168.1.101 --port 9000 --protocol UDP --src-port 4444
+
+# Announce a VLAN / a specific source MAC (for VLAN and MAC rule tests)
+python generator.py --ip 192.168.1.101 --port 9000 --protocol UDP --vlan 20
+python generator.py --ip 192.168.1.101 --port 9000 --protocol UDP --src-mac aa:bb:cc:dd:ee:ff
 """
 from __future__ import annotations
 
 import argparse
 import socket
 import time
+import uuid
+
+
+def _own_mac() -> str:
+    """This machine's MAC as lowercase aa:bb:cc:dd:ee:ff."""
+    mac = uuid.getnode()
+    return ":".join(f"{(mac >> b) & 0xff:02x}" for b in range(40, -1, -8))
+
+
+def _build_header(src_mac: str, vlan: int | None) -> bytes:
+    """SDN metadata header prepended to every packet:  SDN1|k=v;...|
+
+    Lets the receiving client match on a self-reported MAC / VLAN, which a
+    socket-based listener cannot otherwise observe.
+    """
+    parts = [f"src_mac={src_mac}"]
+    if vlan is not None:
+        parts.append(f"vlan={vlan}")
+    return b"SDN1|" + ";".join(parts).encode() + b"|"
 
 
 def _send_udp(
@@ -57,14 +80,17 @@ def _send_tcp(dst_ip: str, dst_port: int, message: bytes) -> str:
 
 def run(args: argparse.Namespace) -> None:
     protocol = args.protocol.upper()
-    message  = args.message.encode()
-    dst      = (args.ip, args.port)
+    src_mac  = args.src_mac or _own_mac()
+    header   = _build_header(src_mac, args.vlan)
+    message  = header + args.message.encode()
     count    = args.count
     infinite = count == 0
     sent     = 0
 
+    vlan_note = f"vlan={args.vlan}" if args.vlan is not None else "vlan=(none)"
     print(f"[generator] {protocol} -> {args.ip}:{args.port}  "
           f"count={'∞' if infinite else count}  interval={args.interval}s")
+    print(f"[generator] announcing src_mac={src_mac}  {vlan_note}")
     print("[generator] Press Ctrl+C to stop.\n")
 
     try:
@@ -107,6 +133,10 @@ def main() -> None:
                         help="Payload string (default: 'SDN-TEST')")
     parser.add_argument("--src-port", default=None, type=int,
                         help="Bind to this source port before sending (UDP only)")
+    parser.add_argument("--src-mac",  default=None,
+                        help="Source MAC to announce (default: this machine's MAC)")
+    parser.add_argument("--vlan",     default=None, type=int,
+                        help="VLAN ID to announce in the packet header")
 
     run(parser.parse_args())
 

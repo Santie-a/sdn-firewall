@@ -16,6 +16,9 @@ from models import FlowRule, Node, Event
 T = TypeVar("T", bound=BaseModel)
 
 DATA_DIR = Path(__file__).parent.parent / "data"
+# Auto-create the storage directory on import: a no-op if it already exists,
+# and it never touches existing files. Removes the manual "mkdir data" step.
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 _RULES_FILE  = DATA_DIR / "rules.json"
 _NODES_FILE  = DATA_DIR / "nodes.json"

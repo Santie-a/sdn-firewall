@@ -10,6 +10,7 @@ import logging
 import socket
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import requests
@@ -43,6 +44,40 @@ def _own_ip() -> str:
         return "127.0.0.1"
 
 
+def _own_mac() -> str:
+    """This machine's MAC as lowercase aa:bb:cc:dd:ee:ff."""
+    mac = uuid.getnode()
+    return ":".join(f"{(mac >> b) & 0xff:02x}" for b in range(40, -1, -8))
+
+
+_META_MAGIC = b"SDN1"
+
+
+def _parse_meta(data: bytes) -> tuple[bytes, str | None, int | None]:
+    """Extract the SDN metadata header if present.
+
+    Generator traffic is prefixed with  SDN1|<k=v;...>|<payload> . The MAC and
+    VLAN are self-reported by the sender (the wire cannot show them to a
+    socket-based client). Returns (payload, src_mac, vlan_id); non-instrumented
+    traffic yields the whole datagram as payload and both fields None.
+    """
+    if not data.startswith(_META_MAGIC + b"|"):
+        return data, None, None
+    parts = data.split(b"|", 2)
+    if len(parts) < 3:
+        return data, None, None
+
+    src_mac: str | None = None
+    vlan_id: int | None = None
+    for kv in parts[1].decode(errors="replace").split(";"):
+        key, _, value = kv.partition("=")
+        if key == "src_mac" and value:
+            src_mac = value
+        elif key == "vlan" and value.isdigit():
+            vlan_id = int(value)
+    return parts[2], src_mac, vlan_id
+
+
 class SDNClient:
     def __init__(self, config: dict) -> None:
         self.node_id      = config["node_id"]
@@ -50,7 +85,9 @@ class SDNClient:
         self.listen_port  = config["listen_port"]
         self.poll_interval = config.get("poll_interval", 10)
         self.ip           = _own_ip()
+        self.mac          = _own_mac()
         self.log_allowed  = config.get("log_allowed", False)
+        self.show_message = config.get("show_message", False)
         self._rules: list[dict] = []
         self._lock = threading.Lock()
         self._registered = False
@@ -146,13 +183,24 @@ class SDNClient:
 
     def _handle(self, data: bytes, src_ip: str, src_port: int, protocol: str) -> str:
         """Evaluate packet against rules. Returns the action taken."""
+        # Generator traffic carries a self-reported MAC/VLAN header; strip it
+        # so 'size' reflects the real payload, not the instrumentation.
+        payload, ann_mac, ann_vlan = _parse_meta(data)
         packet = {
             "src_ip":   src_ip,
             "dst_ip":   self.ip,
             "protocol": protocol,
             "src_port": src_port,
             "dst_port": self.listen_port,
-            "size":     len(data),
+            "size":     len(payload),
+            # Observed from the socket.
+            "in_port":  str(self.listen_port),
+            "eth_type": "IPv4",
+            # src_mac / vlan_id are self-reported by the generator; dst_mac is
+            # this node's own MAC. None when traffic is not instrumented.
+            "src_mac":  ann_mac,
+            "dst_mac":  self.mac,
+            "vlan_id":  ann_vlan,
         }
 
         with self._lock:
@@ -160,9 +208,14 @@ class SDNClient:
 
         action, rule_id = evaluate(packet, rules_snapshot)
 
+        msg = ""
+        if self.show_message and payload:
+            text = payload.decode("utf-8", errors="replace")
+            msg = '  msg="%s"' % (text[:80] + "…" if len(text) > 80 else text)
+
         log.info(
-            "[%s] %s:%s -> %s  (rule=%s)",
-            protocol, src_ip, src_port, action.upper(), rule_id or "default",
+            "[%s] %s:%s -> %s  (rule=%s)%s",
+            protocol, src_ip, src_port, action.upper(), rule_id or "default", msg,
         )
 
         if rule_id:

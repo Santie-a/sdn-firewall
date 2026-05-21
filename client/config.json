@@ -1,7 +1,8 @@
 {
-  "node_id":       "node-9002",
+  "node_id":       "node1-9002",
   "server_url":    "http://127.0.0.1:5000",
   "listen_port":   9002,
   "poll_interval": 5,
-  "log_allowed":   true
+  "log_allowed":   true,
+  "show_message":  true
 }

@@ -20,7 +20,7 @@ def _uuid() -> str:
 class MatchFields(BaseModel):
     src_ip:        Optional[str] = None
     dst_ip:        Optional[str] = None
-    protocol:      Optional[Literal["TCP", "UDP", "ICMP"]] = None
+    protocol:      Optional[Literal["TCP", "UDP"]] = None
     src_port:      Optional[int] = None
     dst_port:      Optional[int] = None
     # extended / optional

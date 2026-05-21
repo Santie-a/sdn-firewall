@@ -29,9 +29,41 @@ def _match_proto(rule_proto: str | None, packet_proto: str) -> bool:
     return rule_proto.upper() == packet_proto.upper()
 
 
+def _match_exact(rule_value: object, packet_value: object) -> bool:
+    """Generic exact match for fields without special semantics.
+
+    A None rule value is a wildcard. When a rule constrains a field the
+    socket-based client cannot observe (VLAN priority, ToS), packet_value is
+    None, so the comparison fails and the rule correctly does not match
+    instead of being silently ignored.
+    """
+    if rule_value is None:
+        return True
+    return rule_value == packet_value
+
+
+def _norm_mac(mac: str) -> str:
+    """Normalise a MAC for comparison: lowercase, ':' separators, no spaces."""
+    return mac.strip().lower().replace("-", ":")
+
+
+def _match_mac(rule_mac: str | None, packet_mac: str | None) -> bool:
+    """Case-insensitive MAC match, tolerant of ':' or '-' separators.
+
+    A None rule value is a wildcard. If the rule constrains a MAC but the
+    packet carries none (non-instrumented traffic), the rule does not match.
+    """
+    if rule_mac is None:
+        return True
+    if packet_mac is None:
+        return False
+    return _norm_mac(rule_mac) == _norm_mac(packet_mac)
+
+
 def evaluate(packet: dict, rules: list[dict]) -> tuple[str, str | None]:
     """
-    packet keys: src_ip, dst_ip, protocol, src_port, dst_port
+    packet keys: src_ip, dst_ip, protocol, src_port, dst_port,
+                 in_port, eth_type, src_mac, dst_mac, vlan_id
     Returns (action, rule_id) where action is 'allow' | 'block' | 'report'.
     """
     sorted_rules = sorted(
@@ -48,6 +80,13 @@ def evaluate(packet: dict, rules: list[dict]) -> tuple[str, str | None]:
             and _match_proto(m.get("protocol"), packet["protocol"])
             and _match_port(m.get("src_port"), packet.get("src_port"))
             and _match_port(m.get("dst_port"), packet.get("dst_port"))
+            and _match_exact(m.get("in_port"),       packet.get("in_port"))
+            and _match_exact(m.get("eth_type"),      packet.get("eth_type"))
+            and _match_mac(m.get("src_mac"),         packet.get("src_mac"))
+            and _match_mac(m.get("dst_mac"),         packet.get("dst_mac"))
+            and _match_exact(m.get("vlan_id"),       packet.get("vlan_id"))
+            and _match_exact(m.get("vlan_priority"), packet.get("vlan_priority"))
+            and _match_exact(m.get("tos"),           packet.get("tos"))
         ):
             return rule["action"], rule["id"]
 
