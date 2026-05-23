@@ -65,13 +65,24 @@ All endpoints accept/return JSON. CORS is open (`*`) so the UI can be served fro
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/nodes/register` | Register a node, or refresh an existing one. Body: `{node_id, ip, listen_port}` |
-| `GET` | `/nodes` | List all nodes. `?status=active\|inactive` to filter |
-| `POST` | `/nodes/{node_id}/heartbeat` | Keepalive — refreshes `last_seen`, marks node active |
-| `DELETE` | `/nodes/{node_id}` | Remove one node |
-| `DELETE` | `/nodes` | Bulk remove. `?status=inactive` clears stale nodes; no filter clears all |
+| `POST` | `/nodes/register` | Register a node, or refresh an existing one. Body: `{node_id, ip, listen_port}`. **403** if the node was previously revoked |
+| `GET` | `/nodes` | List all nodes. `?status=active\|inactive\|revoked` to filter |
+| `POST` | `/nodes/{node_id}/heartbeat` | Keepalive — refreshes `last_seen`, marks node active. **403** if revoked |
+| `POST` | `/nodes/{node_id}/revoke` | Mark the node as revoked. Future register/heartbeat is refused with 403. Idempotent |
+| `POST` | `/nodes/{node_id}/admit` | Lift a revocation — node returns to `inactive` until it next heartbeats. **409** if not currently revoked |
+| `DELETE` | `/nodes/{node_id}` | **Forget** the node — wipes the record. A still-running client may rejoin freely. Use `/revoke` instead to block rejoin |
+| `DELETE` | `/nodes` | Bulk forget. `?status=inactive` clears stale nodes; no filter clears all *non-revoked* nodes (tombstones survive) |
 
-Nodes that miss heartbeats for **10 s** are automatically marked `inactive` by a background task (checked every 2 s).
+Nodes that miss heartbeats for **10 s** are automatically marked `inactive` by a background task (checked every 2 s). **Revoked** is a sticky admin state — it is never demoted by the stale loop.
+
+#### Admission control (revoke vs. forget)
+
+The controller distinguishes two ways to remove a node, matching the SDN convention that the controller — not the node — owns fabric membership:
+
+- **Forget** (`DELETE /nodes/{id}`): clean decommission. The record is deleted. A node process that is still running will simply re-register on its next heartbeat and reappear in the registry. Use this for stale rows you want to tidy up.
+- **Revoke** (`POST /nodes/{id}/revoke`): admin ejection. The record is kept as a tombstone with `status="revoked"` and a `revoked_at` timestamp. Subsequent `/register` and `/heartbeat` calls from that `node_id` return **403**, and the client exits cleanly on its end. Use **Admit** (`POST /nodes/{id}/admit`) to allow it back; the node operator must restart the client process for it to rejoin.
+
+Identity is keyed on `node_id` only. This is consistent with the rest of the system's trust model (self-reported MAC/VLAN headers) — it is an admin convenience, not a security boundary. A determined operator on a revoked node can rename their `node_id` in `config.json` and reconnect.
 
 ### Rules
 

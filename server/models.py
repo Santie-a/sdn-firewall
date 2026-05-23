@@ -71,9 +71,10 @@ class Node(BaseModel):
     node_id:       str
     ip:            str
     listen_port:   int
-    status:        Literal["active", "inactive"] = "active"
+    status:        Literal["active", "inactive", "revoked"] = "active"
     registered_at: str = Field(default_factory=_now)
     last_seen:     str  = Field(default_factory=_now)
+    revoked_at:    Optional[str] = None
 
 
 class NodeRegister(BaseModel):
@@ -94,6 +95,7 @@ class PacketInfo(BaseModel):
     src_port: Optional[int] = None
     dst_port: Optional[int] = None
     size:     int = 0
+    message:  Optional[str] = None
 
 
 class Event(BaseModel):

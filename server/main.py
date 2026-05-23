@@ -43,6 +43,9 @@ async def _stale_node_loop() -> None:
             now = datetime.now(timezone.utc)
             changed = False
             for node in nodes:
+                # Revoked is a sticky admin state — don't let the stale loop demote it
+                if node.status == "revoked":
+                    continue
                 last = datetime.fromisoformat(node.last_seen)
                 age  = (now - last).total_seconds()
                 new_status = "inactive" if age > STALE_THRESHOLD_SECS else "active"
@@ -109,6 +112,8 @@ def _now() -> str:
 def register_node(payload: NodeRegister, bg: BackgroundTasks):
     existing = next((n for n in nodes if n.node_id == payload.node_id), None)
     if existing:
+        if existing.status == "revoked":
+            raise HTTPException(status_code=403, detail="Node revoked by controller")
         existing.ip          = payload.ip
         existing.listen_port = payload.listen_port
         existing.status      = "active"
@@ -134,14 +139,47 @@ def heartbeat(node_id: str, bg: BackgroundTasks):
     node = next((n for n in nodes if n.node_id == node_id), None)
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
+    if node.status == "revoked":
+        raise HTTPException(status_code=403, detail="Node revoked by controller")
     node.last_seen = _now()
     node.status    = "active"
     bg.add_task(storage.save_nodes, nodes)
     return {"ok": True, "last_seen": node.last_seen}
 
 
+@app.post("/nodes/{node_id}/revoke", response_model=Node, tags=["nodes"])
+def revoke_node(node_id: str, bg: BackgroundTasks):
+    """Mark a node as revoked. It will be refused on future register/heartbeat
+    until /admit. Idempotent — revoking an already-revoked node is a no-op."""
+    node = next((n for n in nodes if n.node_id == node_id), None)
+    if not node:
+        raise HTTPException(status_code=404, detail="Node not found")
+    if node.status != "revoked":
+        node.status     = "revoked"
+        node.revoked_at = _now()
+        bg.add_task(storage.save_nodes, nodes)
+    return node
+
+
+@app.post("/nodes/{node_id}/admit", response_model=Node, tags=["nodes"])
+def admit_node(node_id: str, bg: BackgroundTasks):
+    """Lift a revocation. Node returns to 'inactive' until it next registers
+    or heartbeats. 409 if the node is not currently revoked."""
+    node = next((n for n in nodes if n.node_id == node_id), None)
+    if not node:
+        raise HTTPException(status_code=404, detail="Node not found")
+    if node.status != "revoked":
+        raise HTTPException(status_code=409, detail="Node is not revoked")
+    node.status     = "inactive"
+    node.revoked_at = None
+    bg.add_task(storage.save_nodes, nodes)
+    return node
+
+
 @app.delete("/nodes/{node_id}", status_code=204, tags=["nodes"])
 def delete_node(node_id: str, bg: BackgroundTasks):
+    """Forget a node entirely. A forgotten node may rejoin freely if it
+    re-registers; to block re-registration, use /revoke instead."""
     global nodes
     node = next((n for n in nodes if n.node_id == node_id), None)
     if not node:
@@ -153,12 +191,14 @@ def delete_node(node_id: str, bg: BackgroundTasks):
 @app.delete("/nodes", status_code=204, tags=["nodes"])
 def delete_nodes(bg: BackgroundTasks,
                  status: Optional[str] = Query(None, description="Only delete nodes with this status")):
-    """Bulk delete. With ?status=inactive cleans up stale nodes; with no filter clears all."""
+    """Bulk forget. With ?status=inactive cleans up stale nodes; with no filter
+    clears all *non-revoked* nodes (revoked tombstones survive unfiltered bulk
+    delete — remove them individually if you truly want them gone)."""
     global nodes
     if status:
         nodes = [n for n in nodes if n.status != status]
     else:
-        nodes = []
+        nodes = [n for n in nodes if n.status == "revoked"]
     bg.add_task(storage.save_nodes, nodes)
 
 

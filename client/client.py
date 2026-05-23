@@ -91,6 +91,9 @@ class SDNClient:
         self._rules: list[dict] = []
         self._lock = threading.Lock()
         self._registered = False
+        # Set to True if the controller returns 403 on register/heartbeat.
+        # All background threads (and run()) check this flag and exit.
+        self._revoked = False
 
     # ------------------------------------------------------------------
     # Server communication
@@ -115,21 +118,31 @@ class SDNClient:
             return None
 
     def register(self) -> bool:
-        """Attempt to register with the controller. Returns True on success."""
-        r = self._post(
-            "/nodes/register",
-            json={"node_id": self.node_id, "ip": self.ip, "listen_port": self.listen_port},
-        )
-        if r:
-            if not self._registered:
-                log.info("Registered as '%s' (%s)", self.node_id, self.ip)
-            self._registered = True
-            return True
-        self._registered = False
-        return False
+        """Attempt to register with the controller. Returns True on success.
+        On 403 (revoked), sets self._revoked and gives up permanently."""
+        try:
+            r = requests.post(
+                f"{self.server_url}/nodes/register",
+                json={"node_id": self.node_id, "ip": self.ip, "listen_port": self.listen_port},
+                timeout=5,
+            )
+            if r.status_code == 403:
+                log.error("Node revoked by controller — shutting down")
+                self._revoked = True
+                return False
+            r.raise_for_status()
+        except requests.RequestException as e:
+            log.warning("POST /nodes/register failed: %s", e)
+            self._registered = False
+            return False
+
+        if not self._registered:
+            log.info("Registered as '%s' (%s)", self.node_id, self.ip)
+        self._registered = True
+        return True
 
     def _poll_rules(self) -> None:
-        while True:
+        while not self._revoked:
             r = self._get("/rules", params={"enabled_only": True})
             if r:
                 with self._lock:
@@ -138,7 +151,7 @@ class SDNClient:
             time.sleep(self.poll_interval)
 
     def _heartbeat(self) -> None:
-        while True:
+        while not self._revoked:
             if not self._registered:
                 self.register()
             else:
@@ -147,6 +160,10 @@ class SDNClient:
                         f"{self.server_url}/nodes/{self.node_id}/heartbeat",
                         timeout=5,
                     )
+                    if r.status_code == 403:
+                        log.error("Node revoked by controller — shutting down")
+                        self._revoked = True
+                        return
                     if r.status_code == 404:
                         log.info("Server no longer knows this node — re-registering")
                         self._registered = False
@@ -186,6 +203,13 @@ class SDNClient:
         # Generator traffic carries a self-reported MAC/VLAN header; strip it
         # so 'size' reflects the real payload, not the instrumentation.
         payload, ann_mac, ann_vlan = _parse_meta(data)
+
+        # Decode + truncate once so the same preview goes to both the console
+        # log and the controller's Event Log. Bound at 80 chars to keep
+        # events.json small; attacker-controlled, so the UI must esc() it.
+        text = payload.decode("utf-8", errors="replace") if payload else ""
+        message = (text[:80] + "…") if len(text) > 80 else text
+
         packet = {
             "src_ip":   src_ip,
             "dst_ip":   self.ip,
@@ -193,6 +217,7 @@ class SDNClient:
             "src_port": src_port,
             "dst_port": self.listen_port,
             "size":     len(payload),
+            "message":  message or None,
             # Observed from the socket.
             "in_port":  str(self.listen_port),
             "eth_type": "IPv4",
@@ -208,10 +233,7 @@ class SDNClient:
 
         action, rule_id = evaluate(packet, rules_snapshot)
 
-        msg = ""
-        if self.show_message and payload:
-            text = payload.decode("utf-8", errors="replace")
-            msg = '  msg="%s"' % (text[:80] + "…" if len(text) > 80 else text)
+        msg = '  msg="%s"' % message if self.show_message and message else ""
 
         log.info(
             "[%s] %s:%s -> %s  (rule=%s)%s",
@@ -280,16 +302,21 @@ class SDNClient:
     # ------------------------------------------------------------------
 
     def run(self) -> None:
-        # Try once on startup; heartbeat thread retries indefinitely on failure
+        # Try once on startup; heartbeat thread retries indefinitely on failure.
+        # If the controller refuses (403 revoked), exit immediately so the
+        # operator sees the rejection rather than a silent retry loop.
         self.register()
+        if self._revoked:
+            return
 
         for target in (self._poll_rules, self._heartbeat, self._listen_udp, self._listen_tcp):
             threading.Thread(target=target, daemon=True).start()
 
         log.info("SDN client running. Press Ctrl+C to stop.")
         try:
-            while True:
+            while not self._revoked:
                 time.sleep(1)
+            log.info("Exiting: revoked by controller.")
         except KeyboardInterrupt:
             log.info("Shutting down.")
 

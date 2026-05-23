@@ -439,29 +439,81 @@ function renderNodes(nodes) {
   }
 
   tbody.innerHTML = nodes.map(n => {
-    // Trust server status, but also flag any node older than the threshold locally
-    const stale  = staleness(n.last_seen) > 10;
-    const status = stale ? "inactive" : n.status;
+    // Revoked is a sticky admin state — stale logic doesn't apply to it.
+    // For non-revoked nodes, also flag any row older than the threshold locally.
+    const revoked = n.status === "revoked";
+    const stale   = !revoked && staleness(n.last_seen) > 10;
+    const status  = revoked ? "revoked" : (stale ? "inactive" : n.status);
+
+    // Per status, the trash icon means different things. Build the actions cell.
+    let actions;
+    if (revoked) {
+      actions = `
+        <button class="icon-btn admit-btn"  title="Admit this node back into the fabric" data-id="${esc(n.node_id)}">✓</button>
+        <button class="icon-btn delete forget-btn" title="Forget this node entirely (allows rejoin)" data-id="${esc(n.node_id)}">🗑</button>
+      `;
+    } else if (status === "active") {
+      actions = `
+        <button class="icon-btn delete revoke-btn" title="Revoke — eject and block from rejoining" data-id="${esc(n.node_id)}">⛔</button>
+      `;
+    } else {
+      actions = `
+        <button class="icon-btn delete forget-btn" title="Forget this node (it may rejoin if it comes back)" data-id="${esc(n.node_id)}">🗑</button>
+      `;
+    }
+
+    // Time column shows revoked_at for revoked rows, last_seen otherwise.
+    const timeCell = revoked
+      ? `<span title="Revoked">⛔ ${formatTime(n.revoked_at)}</span>`
+      : `<span class="${stale ? "stale-time" : ""}">${formatTime(n.last_seen)}</span>`;
+
     return `
-      <tr>
+      <tr class="${revoked ? "revoked" : ""}">
         <td><code>${esc(n.node_id)}</code></td>
         <td>${esc(n.ip)}</td>
         <td>${esc(n.listen_port)}</td>
         <td><span class="tag tag--${esc(status)}">${esc(status)}</span></td>
         <td>${formatDate(n.registered_at)}</td>
-        <td class="${stale ? "stale-time" : ""}">${formatTime(n.last_seen)}</td>
-        <td class="row-actions">
-          <button class="icon-btn delete delete-node-btn" title="Remove this node" data-id="${esc(n.node_id)}">🗑</button>
-        </td>
+        <td>${timeCell}</td>
+        <td class="row-actions">${actions}</td>
       </tr>`;
   }).join("");
 
-  tbody.querySelectorAll(".delete-node-btn").forEach(btn => {
+  tbody.querySelectorAll(".revoke-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
-      if (!confirm(`Remove node "${btn.dataset.id}" from the registry?`)) return;
+      const id = btn.dataset.id;
+      if (!confirm(`Revoke node "${id}"?\n\nIt will be ejected from the fabric and blocked from rejoining until you admit it.`)) return;
       btn.disabled = true;
       try {
-        await api("DELETE", `/nodes/${encodeURIComponent(btn.dataset.id)}`);
+        await api("POST", `/nodes/${encodeURIComponent(id)}/revoke`);
+        await loadNodes();
+      } catch (e) {
+        alert("Failed: " + e.message);
+      }
+    });
+  });
+
+  tbody.querySelectorAll(".admit-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.id;
+      if (!confirm(`Admit node "${id}" back? It will be allowed to rejoin on its next registration.`)) return;
+      btn.disabled = true;
+      try {
+        await api("POST", `/nodes/${encodeURIComponent(id)}/admit`);
+        await loadNodes();
+      } catch (e) {
+        alert("Failed: " + e.message);
+      }
+    });
+  });
+
+  tbody.querySelectorAll(".forget-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.id;
+      if (!confirm(`Forget node "${id}"?\n\nThe record will be deleted. If the node is still running, it may re-register and reappear.`)) return;
+      btn.disabled = true;
+      try {
+        await api("DELETE", `/nodes/${encodeURIComponent(id)}`);
         await loadNodes();
       } catch (e) {
         alert("Failed: " + e.message);
@@ -476,7 +528,10 @@ async function loadNodes() {
 }
 
 document.getElementById("clearInactiveBtn").addEventListener("click", async (e) => {
-  const inactiveCount = _nodes.filter(n => n.status === "inactive" || staleness(n.last_seen) > 10).length;
+  // Revoked nodes are tombstones — not "inactive" in the cleanup sense.
+  const inactiveCount = _nodes.filter(n =>
+    n.status !== "revoked" && (n.status === "inactive" || staleness(n.last_seen) > 10)
+  ).length;
   if (inactiveCount === 0) {
     alert("No inactive nodes to clear.");
     return;
@@ -505,7 +560,7 @@ function renderEvents(events) {
   const rows   = filter ? events.filter(e => e.action === filter) : events;
 
   if (rows.length === 0) {
-    tbody.innerHTML = `<tr class="empty-row"><td colspan="10">No events yet.</td></tr>`;
+    tbody.innerHTML = `<tr class="empty-row"><td colspan="11">No events yet.</td></tr>`;
     return;
   }
 
@@ -523,6 +578,7 @@ function renderEvents(events) {
         <td>${fmt(p.src_port)}</td>
         <td>${fmt(p.dst_port)}</td>
         <td>${formatBytes(p.size)}</td>
+        <td class="event-msg">${esc(p.message || "")}</td>
         <td class="mono muted">${e.rule_id ? esc(e.rule_id.slice(0, 8)) + "…" : "default"}</td>
       </tr>`;
   }).join("");
@@ -603,15 +659,18 @@ function renderTopology() {
   // Wipe and redraw
   svg.innerHTML = "";
 
-  if (_nodes.length === 0) {
+  // Revoked nodes are not part of the fabric — hide them from the graph.
+  const fabricNodes = _nodes.filter(n => n.status !== "revoked");
+
+  if (fabricNodes.length === 0) {
     empty.classList.remove("hidden");
     return;
   }
   empty.classList.add("hidden");
 
   // Links first, so they render under nodes
-  _nodes.forEach((_, i) => {
-    const { x, y } = nodePosition(i, _nodes.length);
+  fabricNodes.forEach((_, i) => {
+    const { x, y } = nodePosition(i, fabricNodes.length);
     svg.appendChild(svgEl("line", {
       x1: TOPO_CX, y1: TOPO_CY, x2: x, y2: y, class: "topo-link",
     }));
@@ -629,8 +688,8 @@ function renderTopology() {
   }, "(server)"));
 
   // Nodes
-  _nodes.forEach((node, i) => {
-    const { x, y } = nodePosition(i, _nodes.length);
+  fabricNodes.forEach((node, i) => {
+    const { x, y } = nodePosition(i, fabricNodes.length);
     _topoPositions[node.node_id] = { x, y };
 
     const stale = staleness(node.last_seen) > 30;
@@ -725,8 +784,8 @@ function updateDashboard() {
     else if (e.action === "reported") reported++;
   }
 
-  // Active = last_seen within 30 s
-  const activeNodes = _nodes.filter(n => staleness(n.last_seen) <= 30).length;
+  // Active = last_seen within 30 s, and not revoked
+  const activeNodes = _nodes.filter(n => n.status !== "revoked" && staleness(n.last_seen) <= 30).length;
   const activeRules = _rules.filter(r => r.enabled).length;
   const last        = _events.length ? _events[_events.length - 1].timestamp : null;
 

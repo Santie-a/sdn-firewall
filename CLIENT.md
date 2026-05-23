@@ -36,7 +36,7 @@ All per-node settings live in `client/config.json`.
 | `listen_port` | UDP and TCP port this node receives traffic on. |
 | `poll_interval` | Seconds between rule syncs and heartbeats. |
 | `log_allowed` | `true` also logs *allowed* traffic as events (audit trail); `false` logs only block/report. |
-| `show_message` | `true` echoes the received payload text on each packet decision in the client's console log. |
+| `show_message` | `true` echoes the received payload text on each packet decision in the client's console log. The same text (truncated to 80 chars) is always reported to the controller and shown in the UI's Event Log, regardless of this flag. |
 
 The node's IP and MAC are detected automatically — they are not configured.
 
@@ -48,6 +48,8 @@ python client.py
 ```
 
 The client registers with the controller, then runs until `Ctrl+C`. On startup it logs its UDP and TCP listeners; thereafter it logs every packet decision.
+
+If the controller **revokes** the node (admin action from the UI or `POST /nodes/{id}/revoke`), the client receives a `403` on its next register or heartbeat, logs `Node revoked by controller — shutting down`, and exits. To rejoin, the controller must **Admit** the node *and* the operator must restart `python client.py`. Until both happen, the listeners are down and the cached rule set is no longer being refreshed, so the node enforces nothing.
 
 ## Replicability
 

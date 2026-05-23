@@ -503,6 +503,11 @@ details[open] .extended-toggle::before { transform: rotate(90deg); }
 .tag--report   { background: var(--report-soft); color: var(--report); }
 .tag--active   { background: #d1fae5; color: #065f46; }
 .tag--inactive { background: #f3f4f6; color: var(--muted); }
+.tag--revoked  { background: #4a2530; color: #ff8aa3; }
+
+/* Revoked-node row: visually de-emphasized so it reads as a tombstone */
+tr.revoked td { opacity: 0.55; }
+tr.revoked td.row-actions { opacity: 1; }  /* keep buttons fully readable */
 
 /* ------------------------------------------------------------------ */
 /* Icon buttons (table row actions)                                     */
@@ -728,6 +733,16 @@ details[open] .extended-toggle::before { transform: rotate(90deg); }
 .event-row--blocked  td:first-child { border-left: 3px solid var(--block);  }
 .event-row--reported td:first-child { border-left: 3px solid var(--report); }
 .event-row--allowed  td:first-child { border-left: 3px solid var(--allow);  }
+
+/* Event log message cell — payload preview, truncated client-side to 80 chars */
+.event-msg {
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: .82rem;
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* Utility */
 .mono  { font-family: "Consolas", "Courier New", monospace; font-size: .82rem; }
